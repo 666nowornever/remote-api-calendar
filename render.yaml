@@ -2,11 +2,16 @@ services:
   - type: web
     name: remote-api-calendar
     env: node
-    plan: free
     buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 10000
+        value: 3000
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: calendar-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
