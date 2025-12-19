@@ -1,73 +1,64 @@
 const express = require('express');
-const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'data/calendar-data.json');
 
-// Получаем домен из переменной окружения или используем по умолчанию
+// Разрешенные origin'ы
 const ALLOWED_ORIGINS = [
-    'https://666nowornever.github.io',      // Ваш конкретный GitHub Pages
-    'https://web.telegram.org',             // Telegram Web
-    'https://telegram.org',                 // Telegram
-    'http://localhost:3000',                // Локальная разработка
-    'http://localhost:5173',                // Vite dev server
-    'https://*.github.io',                  // Все GitHub Pages
-    'https://*.render.com',                 // Render
-    'https://*.telegram.org'                // Все поддомены Telegram
+    'https://666nowornever.github.io',
+    'https://web.telegram.org',
+    'https://telegram.org',
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://localhost:8080'
 ];
 
-// Middleware для логирования всех запросов
-app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
-    console.log('Origin:', req.headers.origin);
-    console.log('User-Agent:', req.headers['user-agent']);
-    next();
-});
-
 // Middleware для обработки CORS
-app.use((req, res, next) => {
+const corsMiddleware = (req, res, next) => {
     const origin = req.headers.origin;
     
-    // Проверяем, разрешен ли origin
-    const isAllowed = ALLOWED_ORIGINS.some(allowed => {
-        if (allowed.includes('*')) {
-            const regex = new RegExp('^' + allowed.replace('*', '.*') + '$');
-            return regex.test(origin);
-        }
-        return origin === allowed;
-    });
-    
-    if (isAllowed && origin) {
-        res.header('Access-Control-Allow-Origin', origin);
+    // Разрешаем все origins в development, в production - только разрешенные
+    if (process.env.NODE_ENV === 'development' || 
+        !origin || 
+        ALLOWED_ORIGINS.includes(origin) ||
+        origin.includes('github.io') ||
+        origin.includes('telegram.org')) {
+        
+        res.setHeader('Access-Control-Allow-Origin', origin || '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+        res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        res.setHeader('Access-Control-Max-Age', 86400); // 24 часа
     }
     
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Telegram-Init-Data');
-    res.header('Access-Control-Expose-Headers', 'Content-Length, Content-Type, X-Request-Id');
-    res.header('Access-Control-Max-Age', '86400'); // 24 часа
+    // Для OPTIONS запросов сразу отвечаем
+    if (req.method === 'OPTIONS') {
+        console.log('🛫 OPTIONS (preflight) запрос обработан');
+        return res.status(200).end();
+    }
     
     next();
-});
+};
 
-// Обработчик для OPTIONS запросов (preflight)
-app.options('*', (req, res) => {
-    console.log('🛫 Preflight request received');
-    res.status(200).end();
-});
-
-// Основное middleware
+// Применяем middleware
+app.use(corsMiddleware);
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+
+// Логирование запросов
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} ${req.method} ${req.path} | Origin: ${req.headers.origin || 'none'}`);
+    next();
+});
 
 // Инициализация файла данных
 async function initDataFile() {
     try {
         await fs.access(DATA_FILE);
-        console.log('📁 Файл данных существует');
+        console.log('✅ Файл данных существует');
     } catch (error) {
         const initialData = {
             events: {},
@@ -80,17 +71,58 @@ async function initDataFile() {
     }
 }
 
-// Health check - должен быть ПЕРВЫМ после middleware
+// === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+async function readData() {
+    try {
+        const data = await fs.readFile(DATA_FILE, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        console.error('❌ Ошибка чтения файла:', error);
+        throw error;
+    }
+}
+
+async function writeData(data) {
+    try {
+        await fs.writeFile(DATA_FILE, JSON.stringify(data, null, 2));
+    } catch (error) {
+        console.error('❌ Ошибка записи файла:', error);
+        throw error;
+    }
+}
+
+function validateCalendarData(data) {
+    return data && 
+           typeof data === 'object' &&
+           typeof data.events === 'object' &&
+           typeof data.vacations === 'object' &&
+           typeof data.lastModified === 'number' &&
+           typeof data.version === 'number';
+}
+
+// === РОУТЫ ===
+
+// Простой пинг (без валидации CORS для тестов)
+app.get('/api/ping', (req, res) => {
+    console.log('🏓 Пинг запрос получен');
+    res.json({
+        success: true,
+        message: 'pong',
+        timestamp: Date.now(),
+        service: 'Calendar API',
+        origin: req.headers.origin || 'none'
+    });
+});
+
+// Health check
 app.get('/api/health', (req, res) => {
-    console.log('❤️ GET /api/health - Health check');
+    console.log('❤️ Health check');
     res.json({
         success: true,
         status: 'ok',
         timestamp: Date.now(),
-        service: 'Calendar API',
-        environment: process.env.NODE_ENV || 'development',
         uptime: process.uptime(),
-        origin: req.headers.origin || 'No origin header'
+        environment: process.env.NODE_ENV || 'development'
     });
 });
 
@@ -98,19 +130,15 @@ app.get('/api/health', (req, res) => {
 app.get('/api/calendar', async (req, res) => {
     try {
         console.log('📥 GET /api/calendar');
-        
-        const data = await fs.readFile(DATA_FILE, 'utf8');
-        const calendarData = JSON.parse(data);
-        
-        console.log(`📊 Возвращаю данные: ${Object.keys(calendarData.events).length} дежурств, ${Object.keys(calendarData.vacations).length} отпусков`);
+        const data = await readData();
         
         res.json({
             success: true,
-            data: calendarData,
+            data: data,
             timestamp: Date.now()
         });
     } catch (error) {
-        console.error('❌ Ошибка чтения данных:', error);
+        console.error('❌ Ошибка получения данных:', error);
         res.status(500).json({
             success: false,
             error: 'Ошибка чтения данных',
@@ -123,59 +151,31 @@ app.get('/api/calendar', async (req, res) => {
 app.post('/api/calendar', async (req, res) => {
     try {
         console.log('📤 POST /api/calendar');
-        
         const newData = req.body;
         
-        // Валидация данных
-        if (!newData || typeof newData !== 'object') {
-            console.error('❌ Неверный формат данных');
+        if (!validateCalendarData(newData)) {
             return res.status(400).json({
                 success: false,
                 error: 'Неверный формат данных'
             });
         }
         
-        // Проверяем обязательные поля
-        if (typeof newData.events !== 'object' || typeof newData.vacations !== 'object') {
-            console.error('❌ Отсутствуют обязательные поля');
-            return res.status(400).json({
-                success: false,
-                error: 'Отсутствуют обязательные поля events и vacations'
-            });
-        }
-        
-        // Обновляем метку времени
+        // Обновляем timestamp и версию
         newData.lastModified = Date.now();
+        newData.version = (newData.version || 0) + 1;
         
-        // Если версия не передана, увеличиваем на 1
-        if (typeof newData.version !== 'number') {
-            newData.version = 1;
-        } else {
-            newData.version += 1;
-        }
+        await writeData(newData);
         
-        // Сохраняем в файл
-        await fs.writeFile(DATA_FILE, JSON.stringify(newData, null, 2));
-        
-        console.log('💾 Данные сохранены:', {
-            events: Object.keys(newData.events || {}).length,
-            vacations: Object.keys(newData.vacations || {}).length,
-            lastModified: new Date(newData.lastModified).toLocaleString('ru-RU'),
-            version: newData.version
-        });
+        console.log(`💾 Данные сохранены. Версия: ${newData.version}`);
         
         res.json({
             success: true,
             lastModified: newData.lastModified,
             version: newData.version,
-            message: 'Данные успешно сохранены',
-            received: {
-                events: Object.keys(newData.events).length,
-                vacations: Object.keys(newData.vacations).length
-            }
+            message: 'Данные успешно сохранены'
         });
     } catch (error) {
-        console.error('❌ Ошибка сохранения данных:', error);
+        console.error('❌ Ошибка сохранения:', error);
         res.status(500).json({
             success: false,
             error: 'Ошибка сохранения данных',
@@ -188,62 +188,44 @@ app.post('/api/calendar', async (req, res) => {
 app.get('/api/stats', async (req, res) => {
     try {
         console.log('📊 GET /api/stats');
-        
-        const data = await fs.readFile(DATA_FILE, 'utf8');
-        const calendarData = JSON.parse(data);
-        
-        const stats = {
-            totalEvents: Object.keys(calendarData.events || {}).length,
-            totalVacations: Object.keys(calendarData.vacations || {}).length,
-            lastModified: calendarData.lastModified,
-            version: calendarData.version,
-            fileSize: Buffer.byteLength(data, 'utf8')
-        };
-        
-        console.log('📈 Статистика:', stats);
+        const data = await readData();
         
         res.json({
             success: true,
-            stats: stats
+            stats: {
+                eventsCount: Object.keys(data.events || {}).length,
+                vacationsCount: Object.keys(data.vacations || {}).length,
+                lastModified: data.lastModified,
+                version: data.version
+            }
         });
     } catch (error) {
         console.error('❌ Ошибка получения статистики:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
+        res.status(500).json({
+            success: false,
+            error: 'Ошибка получения статистики'
         });
     }
 });
 
-// Тестовый endpoint для проверки CORS
+// Тест CORS
 app.get('/api/test-cors', (req, res) => {
     console.log('🧪 GET /api/test-cors');
     res.json({
         success: true,
-        message: 'CORS работает корректно!',
+        message: 'CORS работает!',
         timestamp: Date.now(),
-        yourOrigin: req.headers.origin || 'No origin',
-        allowedOrigins: ALLOWED_ORIGINS,
-        headers: req.headers
-    });
-});
-
-// Простой тест без CORS проверки
-app.get('/api/ping', (req, res) => {
-    console.log('🏓 GET /api/ping');
-    res.json({
-        success: true,
-        message: 'pong',
-        timestamp: Date.now()
+        yourOrigin: req.headers.origin || 'не указан',
+        allowedOrigins: ALLOWED_ORIGINS
     });
 });
 
 // Обработка 404
-app.use('*', (req, res) => {
+app.use((req, res) => {
     console.log(`❌ 404: ${req.method} ${req.originalUrl}`);
     res.status(404).json({
         success: false,
-        error: 'Endpoint not found',
+        error: 'Эндпоинт не найден',
         path: req.path
     });
 });
@@ -253,9 +235,8 @@ app.use((err, req, res, next) => {
     console.error('💥 Ошибка сервера:', err);
     res.status(500).json({
         success: false,
-        error: 'Internal server error',
-        message: err.message,
-        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+        error: 'Внутренняя ошибка сервера',
+        message: err.message
     });
 });
 
@@ -265,19 +246,20 @@ async function startServer() {
         await initDataFile();
         
         app.listen(PORT, '0.0.0.0', () => {
+            console.log('='.repeat(50));
             console.log(`🚀 Сервер запущен на порту ${PORT}`);
-            console.log(`📊 API доступен по адресу: http://0.0.0.0:${PORT}`);
             console.log(`🌐 Внешний URL: https://remote-api-calendar.onrender.com`);
             console.log(`📁 Файл данных: ${DATA_FILE}`);
-            console.log('🔧 CORS настроен для:');
+            console.log('\n📡 Разрешенные origins:');
             ALLOWED_ORIGINS.forEach(origin => console.log(`  • ${origin}`));
-            console.log('\n📋 Доступные endpoints:');
-            console.log(`  • GET  /api/health     - Проверка работы сервера`);
-            console.log(`  • GET  /api/calendar   - Получить данные календаря`);
-            console.log(`  • POST /api/calendar   - Сохранить данные календаря`);
-            console.log(`  • GET  /api/stats      - Статистика`);
-            console.log(`  • GET  /api/test-cors  - Тест CORS`);
-            console.log(`  • GET  /api/ping       - Простой пинг`);
+            console.log('\n🔌 Доступные эндпоинты:');
+            console.log('  GET  /api/ping       - Проверка доступности');
+            console.log('  GET  /api/health     - Проверка здоровья сервера');
+            console.log('  GET  /api/calendar   - Получить данные календаря');
+            console.log('  POST /api/calendar   - Сохранить данные календаря');
+            console.log('  GET  /api/stats      - Получить статистику');
+            console.log('  GET  /api/test-cors  - Тест CORS');
+            console.log('='.repeat(50));
         });
     } catch (error) {
         console.error('💥 Не удалось запустить сервер:', error);
