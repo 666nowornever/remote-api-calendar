@@ -7,30 +7,61 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'data/calendar-data.json');
 
-// Настройки CORS для вашего Telegram Mini App
-const corsOptions = {
-    origin: [
-        'https://web.telegram.org',       // Telegram Web
-        'https://telegram.org',           // Telegram
-        'http://localhost:3000',          // Локальная разработка
-        'https://*.github.io',            // GitHub Pages
-        'https://*.render.com'            // Render
-    ],
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Accept'],
-    credentials: true,
-    optionsSuccessStatus: 200
-};
+// Получаем домен из переменной окружения или используем по умолчанию
+const ALLOWED_ORIGINS = [
+    'https://666nowornever.github.io',      // Ваш конкретный GitHub Pages
+    'https://web.telegram.org',             // Telegram Web
+    'https://telegram.org',                 // Telegram
+    'http://localhost:3000',                // Локальная разработка
+    'http://localhost:5173',                // Vite dev server
+    'https://*.github.io',                  // Все GitHub Pages
+    'https://*.render.com',                 // Render
+    'https://*.telegram.org'                // Все поддомены Telegram
+];
 
-// Middleware
-app.use(cors(corsOptions));
-app.use(express.json());
-
-// Логирование запросов
+// Middleware для логирования всех запросов
 app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+    console.log('Origin:', req.headers.origin);
+    console.log('User-Agent:', req.headers['user-agent']);
     next();
 });
+
+// Middleware для обработки CORS
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    
+    // Проверяем, разрешен ли origin
+    const isAllowed = ALLOWED_ORIGINS.some(allowed => {
+        if (allowed.includes('*')) {
+            const regex = new RegExp('^' + allowed.replace('*', '.*') + '$');
+            return regex.test(origin);
+        }
+        return origin === allowed;
+    });
+    
+    if (isAllowed && origin) {
+        res.header('Access-Control-Allow-Origin', origin);
+    }
+    
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Telegram-Init-Data');
+    res.header('Access-Control-Expose-Headers', 'Content-Length, Content-Type, X-Request-Id');
+    res.header('Access-Control-Max-Age', '86400'); // 24 часа
+    
+    next();
+});
+
+// Обработчик для OPTIONS запросов (preflight)
+app.options('*', (req, res) => {
+    console.log('🛫 Preflight request received');
+    res.status(200).end();
+});
+
+// Основное middleware
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Инициализация файла данных
 async function initDataFile() {
@@ -49,8 +80,19 @@ async function initDataFile() {
     }
 }
 
-// Обработчик для OPTIONS запросов (preflight)
-app.options('*', cors(corsOptions));
+// Health check - должен быть ПЕРВЫМ после middleware
+app.get('/api/health', (req, res) => {
+    console.log('❤️ GET /api/health - Health check');
+    res.json({
+        success: true,
+        status: 'ok',
+        timestamp: Date.now(),
+        service: 'Calendar API',
+        environment: process.env.NODE_ENV || 'development',
+        uptime: process.uptime(),
+        origin: req.headers.origin || 'No origin header'
+    });
+});
 
 // Получить данные календаря
 app.get('/api/calendar', async (req, res) => {
@@ -142,19 +184,6 @@ app.post('/api/calendar', async (req, res) => {
     }
 });
 
-// Health check
-app.get('/api/health', (req, res) => {
-    console.log('❤️ GET /api/health');
-    res.json({
-        success: true,
-        status: 'ok',
-        timestamp: Date.now(),
-        service: 'Calendar API',
-        environment: process.env.NODE_ENV || 'development',
-        uptime: process.uptime()
-    });
-});
-
 // Получить статистику
 app.get('/api/stats', async (req, res) => {
     try {
@@ -187,13 +216,25 @@ app.get('/api/stats', async (req, res) => {
 });
 
 // Тестовый endpoint для проверки CORS
-app.get('/api/test', (req, res) => {
-    console.log('🧪 GET /api/test');
+app.get('/api/test-cors', (req, res) => {
+    console.log('🧪 GET /api/test-cors');
     res.json({
         success: true,
-        message: 'CORS работает корректно',
+        message: 'CORS работает корректно!',
         timestamp: Date.now(),
+        yourOrigin: req.headers.origin || 'No origin',
+        allowedOrigins: ALLOWED_ORIGINS,
         headers: req.headers
+    });
+});
+
+// Простой тест без CORS проверки
+app.get('/api/ping', (req, res) => {
+    console.log('🏓 GET /api/ping');
+    res.json({
+        success: true,
+        message: 'pong',
+        timestamp: Date.now()
     });
 });
 
@@ -213,7 +254,8 @@ app.use((err, req, res, next) => {
     res.status(500).json({
         success: false,
         error: 'Internal server error',
-        message: err.message
+        message: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
 });
 
@@ -227,7 +269,15 @@ async function startServer() {
             console.log(`📊 API доступен по адресу: http://0.0.0.0:${PORT}`);
             console.log(`🌐 Внешний URL: https://remote-api-calendar.onrender.com`);
             console.log(`📁 Файл данных: ${DATA_FILE}`);
-            console.log('🔧 CORS настроен для Telegram Mini App');
+            console.log('🔧 CORS настроен для:');
+            ALLOWED_ORIGINS.forEach(origin => console.log(`  • ${origin}`));
+            console.log('\n📋 Доступные endpoints:');
+            console.log(`  • GET  /api/health     - Проверка работы сервера`);
+            console.log(`  • GET  /api/calendar   - Получить данные календаря`);
+            console.log(`  • POST /api/calendar   - Сохранить данные календаря`);
+            console.log(`  • GET  /api/stats      - Статистика`);
+            console.log(`  • GET  /api/test-cors  - Тест CORS`);
+            console.log(`  • GET  /api/ping       - Простой пинг`);
         });
     } catch (error) {
         console.error('💥 Не удалось запустить сервер:', error);
